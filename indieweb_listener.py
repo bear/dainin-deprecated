@@ -17,6 +17,7 @@ import ronkyuu
 
 from flask import Flask, request
 
+
 # check for uwsgi, use PWD if present or getcwd() if not
 _uwsgi = __name__.startswith('uwsgi')
 if _uwsgi:
@@ -25,6 +26,7 @@ else:
     _ourPath = os.getcwd()
 
 app = Flask(__name__)
+
 
 def validURL(targetURL):
     """Validate the target URL exists by making a HEAD request for it
@@ -47,7 +49,7 @@ def mention(sourceURL, targetURL):
             app.logger.info('post at %s was referenced by %s' % (targetURL, sourceURL))
             events.inboundWebmention(sourceURL, targetURL, mentions=mentions)
 
-@app.route('/webmention', methods=['GET', 'POST'])
+@app.route('/webmention', methods=['POST'])
 def handleWebmention():
     app.logger.info('handleWebmention [%s]' % request.method)
     if request.method == 'POST':
@@ -71,11 +73,6 @@ def handleWebmention():
             return 'done'
         else:
             return 'invalid post', 404
-    else:
-        s = ''
-        for k in os.environ.keys():
-            s += '%s = %s<br/>' % (k, os.environ[k])
-        return '[%s] [%s]<br/>%s' % (os.getcwd(), __name__, s), 200
 
 def initLogging(logger, logpath=None, echo=False):
     logFormatter = logging.Formatter("%(asctime)s %(levelname)-9s %(message)s", "%Y-%m-%d %H:%M:%S")
@@ -96,11 +93,10 @@ def initLogging(logger, logpath=None, echo=False):
     logger.setLevel(logging.INFO)
     logger.info('starting Webmention App')
 
-
 if _uwsgi:
     initLogging(app.logger, _ourPath)
 
-events = ronkyuu.Events(config={ "handler_path": "/srv/webmention/handlers" })
+events = ronkyuu.Events(config={ "handler_path": os.path.join(_ourPath, "handlers") })
 
 
 #
