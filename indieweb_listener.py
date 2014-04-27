@@ -13,7 +13,9 @@ items that require HTML POSTs:
 import os, sys
 import requests
 import logging
+import datetime
 import ronkyuu
+from mf2py.parser import Parser
 
 from flask import Flask, request
 
@@ -34,6 +36,10 @@ def validURL(targetURL):
     r = requests.head(targetURL)
     return r.status_code == requests.codes.ok
 
+noteTemplate = """<span id="%(url)s"><p class="byline h-entry" role="note"> <a href="%(url)s">%(name)s</a> <time datetime="%(date)s">%(date)s</time></p></span>
+%(marker)s
+"""
+
 def mention(sourceURL, targetURL):
     """Process the Webmention of the targetURL from the sourceURL.
 
@@ -45,9 +51,42 @@ def mention(sourceURL, targetURL):
     mentions = ronkyuu.findMentions(sourceURL)
 
     for href in mentions['refs']:
-        if href <> sourceURL and href == targetURL:
+        if href != sourceURL and href == targetURL:
             app.logger.info('post at %s was referenced by %s' % (targetURL, sourceURL))
-            events.inboundWebmention(sourceURL, targetURL, mentions=mentions)
+            h = open('/srv/webmention/mentions.log', 'w+')
+            h.write('target=%s source=%s' % (targetURL, sourceURL))
+            h.close()
+
+            r = requests.get(sourceURL, verify=False)
+            if r.status_code == requests.codes.ok:
+                d = { 'url':  sourceURL,
+                      'date': datetime.date.today().strftime('%d %b %Y %H:%M')
+                    }
+                if 'charset' in r.headers.get('content-type', ''):
+                    d['content'] = r.text
+                else:
+                    d['content'] = r.content
+
+                p = Parser(doc=d['content'])
+
+                if 'items' in p:
+                    for item in p['items']:
+                        if 'type' in item and 'h-card' in item['type']:
+                            d['name'] = item['properties']['name']
+                            if 'url' in item['properties']:
+                                d['hcard_url'] = item['properties']['url']
+                            else:
+                                d['hcard_url'] = ''
+
+                f = sourceURL.replace('https://bear.im/bearlog', '')
+                f = '/srv/bear.im/bearlog/%s.md' % f
+                s = ''
+                for line in open(f, 'r').readlines():
+                    if '<foot class="footer">' in line:
+                        s += noteTemplate % d
+                    s += line
+
+                open(f, 'w+').write(s)
 
 @app.route('/webmention', methods=['POST'])
 def handleWebmention():
@@ -96,8 +135,6 @@ def initLogging(logger, logpath=None, echo=False):
 if _uwsgi:
     initLogging(app.logger, _ourPath)
 
-events = ronkyuu.Events(config={ "handler_path": os.path.join(_ourPath, "handlers") })
-
 
 #
 # None of the below will be run for nginx + uwsgi
@@ -108,10 +145,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--host',    default='0.0.0.0')
     parser.add_argument('--port',    default=5000, type=int)
-    parser.add_argument('--logpath', default=None)
+    parser.add_argument('--logpath', default='/srv/webmention')
 
     args = parser.parse_args()
 
     initLogging(app.logger, args.logpath, echo=True)
 
     app.run(host=args.host, port=args.port)
+
