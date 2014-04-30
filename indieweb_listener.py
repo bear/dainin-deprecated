@@ -4,10 +4,8 @@
 :copyright: (c) 2013 by Mike Taylor
 :license: MIT, see LICENSE for more details.
 
-A simple Flask web service that handles those inbound IndieWeb
-items that require HTML POSTs:
-
-  webmention
+A simple Flask web service to handle inbound HTML POST
+events that IndieWeb Webmention's require.
 """
 
 import os, sys
@@ -15,19 +13,23 @@ import requests
 import logging
 import datetime
 import ronkyuu
-from mf2py.parser import Parser
 
+from urlparse import urlparse
+from mf2py.parser import Parser
 from flask import Flask, request
 
 
 # check for uwsgi, use PWD if present or getcwd() if not
 _uwsgi = __name__.startswith('uwsgi')
 if _uwsgi:
-    _ourPath = os.getenv('PWD', None)
+    _ourPath    = os.getenv('PWD', None)
+    _configFile = '/etc/indieweb_listener.cfg'
 else:
-    _ourPath = os.getcwd()
+    _ourPath    = os.getcwd()
+    _configFile = os.path.join(_ourPath, 'indieweb_listener.cfg')
 
 app = Flask(__name__)
+cfg = None
 
 
 def validURL(targetURL):
@@ -39,6 +41,51 @@ def validURL(targetURL):
 noteTemplate = """<span id="%(url)s"><p class="byline h-entry" role="note"> <a href="%(url)s">%(name)s</a> <time datetime="%(date)s">%(date)s</time></p></span>
 %(marker)s
 """
+
+def extractHCard(mf2Data):
+    result = { 'name': '', 
+               'url':  '',
+             }
+    if 'items' in mf2Data:
+        for item in p['items']:
+            if 'type' in item and 'h-card' in item['type']:
+                hcard['name'] = item['properties']['name']
+                if 'url' in item['properties']:
+                    hcard['url'] = item['properties']['url']
+    return result
+
+def generateSafeName(sourceURL):
+    urlData = urlparse(sourceURL)
+    result  = '%s_%s.mention' % (urlData.netloc, urlData.path.replace('/', '_')
+    result  = os.path.join(cfg['basepath'], result)
+    return result
+
+def processWebmention(sourceURL, targetURL):
+    h = open(os.path.join(cfg['logpath'], 'mentions.log', 'w+')
+    h.write('target=%s source=%s' % (targetURL, sourceURL))
+    h.close()
+
+    r = requests.get(sourceURL, verify=False)
+    if r.status_code == requests.codes.ok:
+        mentionData = { 'url':       sourceURL,
+                        'targetURL': targetURL,
+                        'recvDate':  datetime.date.today().strftime('%d %b %Y %H:%M')
+                      }
+        if 'charset' in r.headers.get('content-type', ''):
+            mentionData['content'] = r.text
+        else:
+            mentionData['content'] = r.content
+
+        mf2Data = Parser(doc=mentionData['content']).to_dict()
+        hcard   = extractHCard(mf2Data)
+
+        mentionData['hcardName'] = hcard['name']
+        mentionData['hcardURL']  = hcard['url']
+        mentionData['mf2data']   = mf2Data
+
+        targetFile = generateSafeName(sourceURL)
+
+        open(targetFile, 'w').write(json.dumps(mentionData))
 
 def mention(sourceURL, targetURL):
     """Process the Webmention of the targetURL from the sourceURL.
@@ -53,40 +100,7 @@ def mention(sourceURL, targetURL):
     for href in mentions['refs']:
         if href != sourceURL and href == targetURL:
             app.logger.info('post at %s was referenced by %s' % (targetURL, sourceURL))
-            h = open('/srv/webmention/mentions.log', 'w+')
-            h.write('target=%s source=%s' % (targetURL, sourceURL))
-            h.close()
-
-            r = requests.get(sourceURL, verify=False)
-            if r.status_code == requests.codes.ok:
-                d = { 'url':  sourceURL,
-                      'date': datetime.date.today().strftime('%d %b %Y %H:%M')
-                    }
-                if 'charset' in r.headers.get('content-type', ''):
-                    d['content'] = r.text
-                else:
-                    d['content'] = r.content
-
-                p = Parser(doc=d['content'])
-
-                if 'items' in p:
-                    for item in p['items']:
-                        if 'type' in item and 'h-card' in item['type']:
-                            d['name'] = item['properties']['name']
-                            if 'url' in item['properties']:
-                                d['hcard_url'] = item['properties']['url']
-                            else:
-                                d['hcard_url'] = ''
-
-                f = sourceURL.replace('https://bear.im/bearlog', '')
-                f = '/srv/bear.im/bearlog/%s.md' % f
-                s = ''
-                for line in open(f, 'r').readlines():
-                    if '<foot class="footer">' in line:
-                        s += noteTemplate % d
-                    s += line
-
-                open(f, 'w+').write(s)
+            processWebmention(sourceUrl, targetURL)
 
 @app.route('/webmention', methods=['POST'])
 def handleWebmention():
@@ -132,8 +146,26 @@ def initLogging(logger, logpath=None, echo=False):
     logger.setLevel(logging.INFO)
     logger.info('starting Webmention App')
 
+def loadConfig(configFilename, host=None, port=None, basepath=None, logpath=None):
+    if os.path.exists(configFilename):
+        result = json.load(open(configFilename, 'r'))
+    else:
+        result = {}
+
+    if host is not None:
+        result['host'] = host
+    if port is not None:
+        result['port'] = port
+    if basepath is not None:
+        result['basepath'] = basepath
+    if logpath is not None:
+        result['logpath'] = logpath
+
+    return result
+
 if _uwsgi:
-    initLogging(app.logger, _ourPath)
+    cfg = loadConfig(_configFile, logpath=_ourPath)
+    initLogging(app.logger, cfg['logpath'])
 
 
 #
@@ -143,13 +175,16 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host',    default='0.0.0.0')
-    parser.add_argument('--port',    default=5000, type=int)
-    parser.add_argument('--logpath', default='/srv/webmention')
+    parser.add_argument('--host',     default='0.0.0.0')
+    parser.add_argument('--port',     default=5000, type=int)
+    parser.add_argument('--logpath',  default='/srv/webmention')
+    parser.add_argument('--basepath', default='/opt/bearlog/')
+    parser.add_argument('--config',   default='/etc/indieweb_listener.cfg')
 
     args = parser.parse_args()
 
-    initLogging(app.logger, args.logpath, echo=True)
+    cfg = loadConfig(args.config, args.host, args.port, args.basepath, args.logpath)
 
-    app.run(host=args.host, port=args.port)
+    initLogging(app.logger, cfg['logpath'], echo=True)
 
+    app.run(host=cfg['host'], port=cfg['port'])
