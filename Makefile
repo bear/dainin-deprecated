@@ -1,6 +1,6 @@
 
 init:
-    pip install -r requirements.txt
+	pip install -r requirements.txt
 
 test:
-    nosetests --verbosity=2 tests 
+	nosetests --verbosity=2 tests

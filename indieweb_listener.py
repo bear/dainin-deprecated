@@ -14,6 +14,7 @@ import os, sys
 import requests
 import logging
 import ronkyuu
+import events
 
 from flask import Flask, request
 
@@ -47,7 +48,7 @@ def mention(sourceURL, targetURL):
     for href in mentions['refs']:
         if href <> sourceURL and href == targetURL:
             app.logger.info('post at %s was referenced by %s' % (targetURL, sourceURL))
-            events.inboundWebmention(sourceURL, targetURL, mentions=mentions)
+            event.inboundWebmention(sourceURL, targetURL, mentions=mentions)
 
 @app.route('/webmention', methods=['POST'])
 def handleWebmention():
@@ -96,7 +97,7 @@ def initLogging(logger, logpath=None, echo=False):
 if _uwsgi:
     initLogging(app.logger, _ourPath)
 
-events = ronkyuu.Events(config={ "handler_path": os.path.join(_ourPath, "handlers") })
+event = events.Events(config={ "handler_path": os.path.join(_ourPath, "handlers") })
 
 
 #
