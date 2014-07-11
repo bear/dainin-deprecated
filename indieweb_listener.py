@@ -1,23 +1,64 @@
 #!/usr/bin/env python
 
 """
-:copyright: (c) 2013 by Mike Taylor
+:copyright: (c) 2013-2014 by Mike Taylor
 :license: MIT, see LICENSE for more details.
 
-A simple Flask web service to handle inbound HTML POST
-events that IndieWeb Webmention's require.
+A simple Flask web service to handle inbound HTML
+events that IndieWeb sites require.
 """
 
 import os, sys
-import requests
+import json
 import logging
 import datetime
-import ronkyuu
-import events
+import urllib
 
-from urlparse import urlparse
+import requests
+import ronkyuu
+
+from urlparse import urlparse, ParseResult
 from mf2py.parser import Parser
-from flask import Flask, request
+from flask import Flask, request, redirect, render_template
+
+from flask.ext.wtf import Form
+from wtforms import TextField, HiddenField, BooleanField
+from wtforms.validators import Required
+
+class LoginForm(Form):
+    domain       = TextField('domain', validators = [Required()])
+    client_id    = HiddenField('client_id')
+    redirect_uri = HiddenField('redirect_uri')
+
+class Events(object):
+    def __init__(self, config):
+        self.handlers = {}
+        self.config   = config
+
+        self.loadHandlers()
+
+    def loadHandlers(self):
+        if 'handler_path' in self.config:
+            handlerPath = os.path.abspath(
+                os.path.expanduser(self.config['handler_path']))
+
+            for (dirpath, dirnames, filenames) in os.walk(handlerPath):
+                for filename in filenames:
+                    moduleName, moduleExt = os.path.splitext(os.path.basename(filename))
+                    if moduleExt == '.py':
+                        module = imp.load_source(moduleName, os.path.join(handlerPath, filename))
+                        if hasattr(module, 'setup'):
+                            self.handlers[moduleName.lower()] = module
+
+    def handle(self, eventClass, eventName, *args):
+        eventClass = eventClass.lower()
+        if eventClass in self.handlers:
+            module = self.handlers[eventClass]
+            try:
+                if hasattr(module, eventName):
+                    getattr(module, eventName)(*args)
+            except Exception, e:
+                raise Exception('error during call %s.%s(%s)' % (eventClass, eventName, ','.join(args)))
 
 
 # check for uwsgi, use PWD if present or getcwd() if not
@@ -31,7 +72,58 @@ else:
 
 app = Flask(__name__)
 cfg = None
+app.config['SECRET_KEY'] = 'foo'
 
+
+@app.route('/login', methods=['GET', 'POST'])
+def handleLogin():
+    app.logger.info('handleLogin [%s]' % request.method)
+    form = LoginForm(client_id=cfg['client_id'], redirect_uri='%s/success' % cfg['baseurl'])
+
+    if form.validate_on_submit():
+        app.logger.info('login domain [%s]' % form.domain.data)
+        authEndpoints = ronkyuu.indieauth.discoverAuthEndpoints(form.domain.data)
+
+        if 'authorization_endpoint' in authEndpoints:
+            authURL = None
+            for url in authEndpoints['authorization_endpoint']:
+                authURL = url
+                break
+
+            if authURL is not None:
+                url = ParseResult(authURL.scheme, 
+                                  authURL.netloc,
+                                  authURL.path,
+                                  authURL.params,
+                                  urllib.urlencode({ 'me':            form.domain.data,
+                                                     'redirect_uri':  form.redirect_uri.data,
+                                                     'client_id':     form.client_id.data,
+                                                     'scope':         'post',
+                                                     'response_type': 'id'
+                                                   }),
+                                  authURL.fragment).geturl()
+
+                return redirect(url)
+        else:
+            return 'insert fancy no auth endpoint found error message here', 403
+
+    return render_template('login.html', title = 'Authenticate', form = form)
+
+@app.route('/success', methods=['GET',])
+def handleLoginSuccess():
+    app.logger.info('handleLoginSuccess [%s]' % request.method)
+    # do something useful with the request.args.get('code') and client_id=cfg['client_id'] returned here
+    return 'authentication was successful', 200
+
+@app.route('/auth', methods=['GET',])
+def handleAuth():
+    app.logger.info('handleAuth [%s]' % request.method)
+    r = ronkyuu.indieauth.validateAuthToken(code=request.args.get('code'), client_id=cfg['client_id'], redirect_uri='%s/success' % cfg['baseurl'])
+    if 'response' in r:
+        app.logger.info('token is valid')
+        return 'token valid', 200
+    else:
+        return 'token invalid', 403
 
 def validURL(targetURL):
     """Validate the target URL exists by making a HEAD request for it
@@ -57,12 +149,12 @@ def extractHCard(mf2Data):
 
 def generateSafeName(sourceURL):
     urlData = urlparse(sourceURL)
-    result  = '%s_%s.mention' % (urlData.netloc, urlData.path.replace('/', '_')
+    result  = '%s_%s.mention' % (urlData.netloc, urlData.path.replace('/', '_'))
     result  = os.path.join(cfg['basepath'], result)
     return result
 
 def processWebmention(sourceURL, targetURL):
-    h = open(os.path.join(cfg['logpath'], 'mentions.log', 'w+')
+    h = open(os.path.join(cfg['logpath'], 'mentions.log', 'w+'))
     h.write('target=%s source=%s' % (targetURL, sourceURL))
     h.close()
 
@@ -150,18 +242,20 @@ def initLogging(logger, logpath=None, echo=False):
     logger.info('starting Webmention App')
 
 def loadConfig(configFilename, host=None, port=None, basepath=None, logpath=None):
-    if os.path.exists(configFilename):
-        result = json.load(open(configFilename, 'r'))
+    filename = os.path.abspath(configFilename)
+
+    if os.path.exists(filename):
+        result = json.load(open(filename, 'r'))
     else:
         result = {}
 
-    if host is not None:
+    if host is not None and 'host' not in result:
         result['host'] = host
-    if port is not None:
+    if port is not None and 'port' not in result:
         result['port'] = port
-    if basepath is not None:
+    if basepath is not None and 'basepath' not in result:
         result['basepath'] = basepath
-    if logpath is not None:
+    if logpath is not None and 'logpath' not in result:
         result['logpath'] = logpath
 
     return result
@@ -192,4 +286,4 @@ if __name__ == '__main__':
 
     initLogging(app.logger, cfg['logpath'], echo=True)
 
-    app.run(host=cfg['host'], port=cfg['port'])
+    app.run(host=cfg['host'], port=cfg['port'], debug=True)
