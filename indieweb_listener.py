@@ -118,12 +118,12 @@ def handleLoginSuccess():
 @app.route('/auth', methods=['GET',])
 def handleAuth():
     app.logger.info('handleAuth [%s]' % request.method)
-    r = ronkyuu.indieauth.validateAuthToken(code=request.args.get('code'), client_id=cfg['client_id'], redirect_uri='%s/success' % cfg['baseurl'])
+    r = ronkyuu.indieauth.validateAuthCode(code=request.args.get('code'), client_id=cfg['client_id'], redirect_uri='%s/success' % cfg['baseurl'])
     if 'response' in r:
-        app.logger.info('token is valid')
-        return 'token valid', 200
+        app.logger.info('auth code is valid')
+        return 'code valid', 200
     else:
-        return 'token invalid', 403
+        return 'code invalid', 403
 
 def validURL(targetURL):
     """Validate the target URL exists by making a HEAD request for it
