@@ -128,23 +128,28 @@ def handleLoginSuccess():
     if db is not None:
         data = db.hgetall(me)
         if data:
-            scope = data['scope']
-        db.hset(me, 'code', code)
-        db.expire(me, 86400)
-        db.set(code, me)
-        db.expire(code, 86400)
+            r = ronkyuu.indieauth.validateAuthCode(code=code, 
+                                                   client_id=data['client_id'],
+                                                   redirect_uri=data['redirect_uri'])
+            if 'response' in r:
+                app.logger.info('login code verified')
+                scope = data['scope']
+                db.hset(me, 'code', code)
+                db.expire(me, 86400)
+                db.set(code, me)
+                db.expire(code, 86400)
+            else:
+                app.logger.info('login code invalid')
+                db.delete(me)
 
-    return 'authentication for %s with the scope %s was successful' % (me, scope), 200
+    if scope:
+        return 'authentication for %s with the scope %s was successful' % (me, scope), 200
+    else:
+        return 'authentication failed', 403
 
 @app.route('/auth', methods=['GET',])
 def handleAuth():
     app.logger.info('handleAuth [%s]' % request.method)
-    # r = ronkyuu.indieauth.validateAuthCode(code=request.args.get('code'), client_id=cfg['client_id'], redirect_uri='%s/success' % cfg['baseurl'])
-    # if 'response' in r:
-    #     app.logger.info('auth code is valid')
-    #     return 'code valid', 200
-    # else:
-    #     return 'code invalid', 403
     result = False
     if db is not None:
         code = request.args.get('code')
