@@ -233,7 +233,7 @@ def mention(sourceURL, targetURL):
             app.logger.info('post at %s was referenced by %s' % (targetURL, sourceURL))
 
             # event.inboundWebmention(sourceURL, targetURL, mentions=mentions)
-            processWebmention(sourceUrl, targetURL)
+            processWebmention(sourceURL, targetURL)
 
 @app.route('/webmention', methods=['POST'])
 def handleWebmention():
