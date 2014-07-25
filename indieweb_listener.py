@@ -14,6 +14,7 @@ import logging
 import datetime
 import urllib
 
+import redis
 import requests
 import ronkyuu
 
@@ -24,6 +25,7 @@ from flask import Flask, request, redirect, render_template
 from flask.ext.wtf import Form
 from wtforms import TextField, HiddenField, BooleanField
 from wtforms.validators import Required
+
 
 class LoginForm(Form):
     domain       = TextField('domain', validators = [ DataRequired() ])
@@ -72,6 +74,7 @@ else:
 
 app = Flask(__name__)
 cfg = None
+db  = None
 app.config['SECRET_KEY'] = 'foo'
 
 
@@ -103,6 +106,13 @@ def handleLogin():
                                                    }),
                                   authURL.fragment).geturl()
 
+                if db is not None:
+                    db.hset(form.domain.data, 'redirect_uri', form.redirect_uri.data)
+                    db.hset(form.domain.data, 'client_id',    form.client_id.data)
+                    db.hset(form.domain.data, 'scope',        'post')
+                    db.hdel(form.domain.data, 'code')  # clear any existing auth code
+                    db.expire(form.domain.data, '300') # expire in 5 minutes unless successful
+
                 return redirect(url)
         else:
             return 'insert fancy no auth endpoint found error message here', 403
@@ -112,18 +122,41 @@ def handleLogin():
 @app.route('/success', methods=['GET',])
 def handleLoginSuccess():
     app.logger.info('handleLoginSuccess [%s]' % request.method)
-    # do something useful with the request.args.get('code') and client_id=cfg['client_id'] returned here
-    return 'authentication was successful', 200
+    me    = request.args.get('me')
+    code  = request.args.get('code')
+    scope = None
+    if db is not None:
+        data = db.hgetall(me)
+        if data:
+            scope = data['scope']
+        db.hset(me, 'code', code)
+        db.expire(me, 86400)
+        db.set(code, me)
+        db.expire(code, 86400)
+
+    return 'authentication for %s with the scope %s was successful' % (me, scope), 200
 
 @app.route('/auth', methods=['GET',])
 def handleAuth():
     app.logger.info('handleAuth [%s]' % request.method)
-    r = ronkyuu.indieauth.validateAuthCode(code=request.args.get('code'), client_id=cfg['client_id'], redirect_uri='%s/success' % cfg['baseurl'])
-    if 'response' in r:
-        app.logger.info('auth code is valid')
-        return 'code valid', 200
+    # r = ronkyuu.indieauth.validateAuthCode(code=request.args.get('code'), client_id=cfg['client_id'], redirect_uri='%s/success' % cfg['baseurl'])
+    # if 'response' in r:
+    #     app.logger.info('auth code is valid')
+    #     return 'code valid', 200
+    # else:
+    #     return 'code invalid', 403
+    result = False
+    if db is not None:
+        code = request.args.get('code')
+        me   = db.get(code)
+        if me:
+            data = db.hgetall(me)
+            if data and data['code'] == code:
+                result = True
+    if result:
+        return 'valid', 200
     else:
-        return 'code invalid', 403
+        return 'invalid', 403
 
 def validURL(targetURL):
     """Validate the target URL exists by making a HEAD request for it
@@ -260,12 +293,23 @@ def loadConfig(configFilename, host=None, port=None, basepath=None, logpath=None
 
     return result
 
+def getRedis(cfgRedis):
+    if 'host' not in cfgRedis:
+        cfgRedis['host'] = '127.0.0.1'
+    if 'port' not in cfgRedis:
+        cfgRedis['port'] = 6379
+    if 'db' not in cfgRedis:
+        cfgRedis['db'] = 0
+
+    return redis.StrictRedis(host=cfgRedis['host'], port=cfgRedis['port'], db=cfgRedis['db'])
+
 # event = events.Events(config={ "handler_path": os.path.join(_ourPath, "handlers") })
 
 if _uwsgi:
     cfg = loadConfig(_configFile, logpath=_ourPath)
     initLogging(app.logger, cfg['logpath'])
-
+    if 'redis' in cfg:
+        db = getRedis(cfg['redis'])
 
 #
 # None of the below will be run for nginx + uwsgi
@@ -283,6 +327,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     cfg = loadConfig(args.config, args.host, args.port, args.basepath, args.logpath)
+
+    if 'redis' in cfg:
+        db = getRedis(cfg['redis'])
 
     initLogging(app.logger, cfg['logpath'], echo=True)
 
