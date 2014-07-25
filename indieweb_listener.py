@@ -26,7 +26,7 @@ from wtforms import TextField, HiddenField, BooleanField
 from wtforms.validators import Required
 
 class LoginForm(Form):
-    domain       = TextField('domain', validators = [Required()])
+    domain       = TextField('domain', validators = [ DataRequired() ])
     client_id    = HiddenField('client_id')
     redirect_uri = HiddenField('redirect_uri')
 
