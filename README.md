@@ -16,9 +16,13 @@ and it also handles IndieAuth login
 
     GET  /login
     GET  /success
+    GET  /auth
 
 The [Ronkyuu](https://github.com/bear/ronkyuu) library is used to verify and
 validate the webmention and also to manage the IndieAuth process.
+
+If a redis entry is found in the configuration file it will be used to store
+IndieAuth login information and the auth code returned.
 
 Events
 ------
@@ -47,13 +51,9 @@ Events consist of the event type and a payload, not much else is really needed.
 
 Roadmap
 =======
-Pending
-* ...
-
-Working
 * command line tool to trigger an event
 * examples for event handling
-* login, success and auth endpoints for IndieAuth and MicroPub
+* endpoints for MicroPub
 
 Contributors
 ============
