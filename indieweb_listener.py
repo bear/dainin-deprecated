@@ -178,11 +178,11 @@ def extractHCard(mf2Data):
                'url':  '',
              }
     if 'items' in mf2Data:
-        for item in p['items']:
+        for item in mf2data['items']:
             if 'type' in item and 'h-card' in item['type']:
-                hcard['name'] = item['properties']['name']
+                result['name'] = item['properties']['name']
                 if 'url' in item['properties']:
-                    hcard['url'] = item['properties']['url']
+                    result['url'] = item['properties']['url']
     return result
 
 def generateSafeName(sourceURL):
@@ -191,7 +191,7 @@ def generateSafeName(sourceURL):
     return result
 
 def processWebmention(sourceURL, targetURL):
-    h = open(os.path.join(cfg['logpath'], 'mentions.log', 'w+'))
+    h = open(os.path.join(cfg['logpath'], 'mentions.log'), 'w+')
     h.write('target=%s source=%s' % (targetURL, sourceURL))
     h.close()
 
