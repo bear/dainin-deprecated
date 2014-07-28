@@ -188,7 +188,6 @@ def extractHCard(mf2Data):
 def generateSafeName(sourceURL):
     urlData = urlparse(sourceURL)
     result  = '%s_%s.mention' % (urlData.netloc, urlData.path.replace('/', '_'))
-    result  = os.path.join(cfg['basepath'], result)
     return result
 
 def processWebmention(sourceURL, targetURL):
@@ -214,9 +213,12 @@ def processWebmention(sourceURL, targetURL):
         mentionData['hcardURL']  = hcard['url']
         mentionData['mf2data']   = mf2Data
 
-        targetFile = generateSafeName(sourceURL)
-
-        open(targetFile, 'w').write(json.dumps(mentionData))
+        safeID     = generateSafeName(sourceURL)
+        targetFile = os.path.join(cfg['basepath'], safeID)
+        sData      = json.dumps(mentionData)
+        if db is not None:
+            db.set('mention::%s' % safeID, sData)
+        open(targetFile, 'w').write(sData)
 
 def mention(sourceURL, targetURL):
     """Process the Webmention of the targetURL from the sourceURL.
