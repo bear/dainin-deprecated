@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{{ title }}</title>
+
+    {% for key, value in meta.iteritems() %}
+    <meta name="{{ key }}" content="{{ value }}"/>
+    {% endfor %}
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta name="mobile-web-app-capable" content="yes"/>
+
+    <link rel="webmention" href="{{ baseurl }}/webmention"/>
+    <link href="/static/main.css" rel="stylesheet" type="text/css">
+</head>
+<body>
+  <div class="content">
+    {% block content %}{% endblock %}
+    <footer class="footer">
+    </footer>
+  </div>
+</div>
+</body>
+</html>

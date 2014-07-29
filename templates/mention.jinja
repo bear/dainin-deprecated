@@ -1,3 +1,5 @@
+{% extends "base.jinja" %}
+{% block content %}        
 <h1>Leave a note</h1>
 {% for message in get_flashed_messages() %}
   <div class="flash">{{ message }}</div>
@@ -12,3 +14,4 @@
     {{form.hidden_tag()}}
     <p><button type="submit">Mention</button></p>
 </form>
+{% endblock content %}

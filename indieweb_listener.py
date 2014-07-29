@@ -36,10 +36,7 @@ class MentionForm(Form):
     sourceURL    = TextField('sourceURL', validators = [ Required() ])
     targetURL    = TextField('targetURL', validators = [ Required() ])
     note         = TextField('note',      validators = [])    
-
-class AutoMentionForm(Form):
-    sourceURL    = TextField('sourceURL', validators = [ Required() ])
-    targetURL    = TextField('targetURL', validators = [ Required() ])
+    mention_type = HiddenField('mention_type')
 
 class Events(object):
     def __init__(self, config):
@@ -85,6 +82,8 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'foo'  # replaced downstream
 cfg = None
 db  = None
+templateData = {}
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def handleLogin():
@@ -94,7 +93,15 @@ def handleLogin():
 
     if form.validate_on_submit():
         app.logger.info('login domain [%s]' % form.domain.data)
-        authEndpoints = ronkyuu.indieauth.discoverAuthEndpoints(form.domain.data)
+        domain = form.domain.data
+        url    = urlparse(domain)
+        if url.scheme not in ('http', 'https'):
+            if len(url.netloc) == 0:
+                domain = 'http://%s' % url.path
+            else:
+                domain = 'http://%s' % url.netloc
+
+        authEndpoints = ronkyuu.indieauth.discoverAuthEndpoints(domain)
 
         if 'authorization_endpoint' in authEndpoints:
             authURL = None
@@ -107,7 +114,7 @@ def handleLogin():
                                   authURL.netloc,
                                   authURL.path,
                                   authURL.params,
-                                  urllib.urlencode({ 'me':            form.domain.data,
+                                  urllib.urlencode({ 'me':            domain,
                                                      'redirect_uri':  form.redirect_uri.data,
                                                      'client_id':     form.client_id.data,
                                                      'scope':         'post',
@@ -116,17 +123,19 @@ def handleLogin():
                                   authURL.fragment).geturl()
 
                 if db is not None:
-                    db.hset(form.domain.data, 'redirect_uri', form.redirect_uri.data)
-                    db.hset(form.domain.data, 'client_id',    form.client_id.data)
-                    db.hset(form.domain.data, 'scope',        'post')
-                    db.hdel(form.domain.data, 'code')  # clear any existing auth code
-                    db.expire(form.domain.data, cfg['auth_timeout']) # expire in N minutes unless successful
+                    db.hset(domain, 'redirect_uri', form.redirect_uri.data)
+                    db.hset(domain, 'client_id',    form.client_id.data)
+                    db.hset(domain, 'scope',        'post')
+                    db.hdel(domain, 'code')  # clear any existing auth code
+                    db.expire(domain, cfg['auth_timeout']) # expire in N minutes unless successful
 
                 return redirect(url)
         else:
             return 'insert fancy no auth endpoint found error message here', 403
 
-    return render_template('login.html', title = 'Authenticate', form = form)
+    templateData['title'] = 'Authenticate'
+    templateData['form']  = form
+    return render_template('login.jinja', **templateData)
 
 @app.route('/success', methods=['GET',])
 def handleLoginSuccess():
@@ -135,6 +144,7 @@ def handleLoginSuccess():
     code  = request.args.get('code')
     scope = None
     if db is not None:
+        app.logger.info('getting data to validate auth code [%s]' % me)
         data = db.hgetall(me)
         if data:
             r = ronkyuu.indieauth.validateAuthCode(code=code, 
@@ -151,6 +161,8 @@ def handleLoginSuccess():
             else:
                 app.logger.info('login code invalid')
                 db.delete(me)
+        else:
+            app.logger.info('nothing found for domain [%s]' % me)
 
     if scope:
         return 'authentication for %s with the scope %s was successful' % (me, scope), 200
@@ -191,28 +203,37 @@ def handleMention():
             if data and data['code'] == code:
                 result = True
 
-    form = MentionForm(sourceURL=request.args.get('sourceURL'), targetURL=request.args.get('targetURL'), note='')
-    if request.args.get('mention_type') == 'auto':
+    form = MentionForm(csrf_enabled=False, sourceURL=request.args.get('sourceURL'), targetURL=request.args.get('targetURL'), note='')
+    if form.mention_type.data == 'auto' or request.args.get('mention_type') == 'auto':
         del form.note
 
     if request.method == 'POST':
         app.logger.info('mention post')
         if form.validate():
-            if result:
-                return 'mention post with valid session', 200
-            else:
-                return 'mention post with INVALID session', 403
+            if form.mention_type.data == 'auto':
+                if validURL(form.sourceURL.data) == requests.codes.ok:
+                    processWebmention(form.sourceURL.data, form.targetURL.data)
+                    return 'mention posted (yes, need to make this a valid thankyou page)', 200
+                else:
+                    return 'The URL [%s] given could not be located' % form.sourceURL.data, 400
         else:
             flash('all fields are required')
 
-    return render_template('mention.html', title = 'Leave a mention', form = form)
+    templateData['title'] = 'Leave a mention'
+    templateData['form']  = form
+    return render_template('mention.jinja', **templateData)
 
 
 def validURL(targetURL):
     """Validate the target URL exists by making a HEAD request for it
     """
-    r = requests.head(targetURL)
-    return r.status_code == requests.codes.ok
+    result = 404
+    try:
+        r = requests.head(targetURL)
+        result = r.status_code
+    except:
+        result = 404
+    return result
 
 noteTemplate = """<span id="%(url)s"><p class="byline h-entry" role="note"> <a href="%(url)s">%(name)s</a> <time datetime="%(date)s">%(date)s</time></p></span>
 %(marker)s
@@ -223,7 +244,7 @@ def extractHCard(mf2Data):
                'url':  '',
              }
     if 'items' in mf2Data:
-        for item in mf2data['items']:
+        for item in mf2Data['items']:
             if 'type' in item and 'h-card' in item['type']:
                 result['name'] = item['properties']['name']
                 if 'url' in item['properties']:
@@ -359,6 +380,16 @@ def getRedis(cfgRedis):
 
 # event = events.Events(config={ "handler_path": os.path.join(_ourPath, "handlers") })
 
+def buildTemplateContext(config):
+    result = {}
+    for key in ('baseurl', 'title', 'meta'):
+        if key in config:
+            value = config[key]
+        else:
+            value = ''
+        result[key] = value
+    return result
+
 def doStart(app, configFile, ourHost=None, ourPort=None, ourBasePath=None, ourPath=None, echo=False):
     _cfg = loadConfig(configFile, host=ourHost, port=ourPort, basepath=ourBasePath, logpath=ourPath)
     _db  = None
@@ -371,7 +402,7 @@ def doStart(app, configFile, ourHost=None, ourPort=None, ourBasePath=None, ourPa
 
 if _uwsgi:
     cfg, db = doStart(app, _configFile, _ourPath)
-
+    templateData = buildTemplateContext(cfg)
 #
 # None of the below will be run for nginx + uwsgi
 #
@@ -388,5 +419,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     cfg, db = doStart(app, args.config, args.host, args.port, args.basepath, args.logpath, echo=True)
+    templateData = buildTemplateContext(cfg)
 
     app.run(host=cfg['host'], port=cfg['port'], debug=True)
