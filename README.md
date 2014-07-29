@@ -66,3 +66,9 @@ Python v2.6+ but see requirements.txt for a full list
 Installing the latest version of Requests and it's OAuth plugin now requires
 pyOpenSSL which will require compiling of source libs. You may need to have
 installed the -dev package for the version of Python you are working with.
+
+Notes to myself
+===============
+Testing locally
+
+    python indieweb_listener.py --logpath . --port 9999 --host 127.0.0.1 --config ./indieweb_listener.cfg

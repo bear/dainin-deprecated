@@ -1,0 +1,14 @@
+<h1>Leave a note</h1>
+{% for message in get_flashed_messages() %}
+  <div class="flash">{{ message }}</div>
+{% endfor %}
+<form action="" method="post" name="mention">
+    Source URL: {{form.sourceURL(size=60)}}
+    Target URL: {{form.targetURL(size=60)}}
+    {% if form.note %}
+    Note: {{form.note(size=60)}}
+    {% endif %}
+    {{form.mention_type}}
+    {{form.hidden_tag()}}
+    <p><button type="submit">Mention</button></p>
+</form>
