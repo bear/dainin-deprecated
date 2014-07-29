@@ -32,11 +32,8 @@ class LoginForm(Form):
     client_id    = HiddenField('client_id')
     redirect_uri = HiddenField('redirect_uri')
 
-class MentionForm(Form):
-    sourceURL    = TextField('sourceURL', validators = [ Required() ])
-    targetURL    = TextField('targetURL', validators = [ Required() ])
-    note         = TextField('note',      validators = [])    
-    mention_type = HiddenField('mention_type')
+class NoteForm(Form):
+    note = TextField('note', validators = [])
 
 class Events(object):
     def __init__(self, config):
@@ -185,9 +182,9 @@ def handleAuth():
     else:
         return 'invalid', 403
 
-@app.route('/mention', methods=['GET', 'POST'])
-def handleMention():
-    app.logger.info('handleMention [%s]' % request.method)
+@app.route('/note', methods=['GET', 'POST'])
+def handleNote():
+    app.logger.info('handleNote [%s]' % request.method)
 
     client_id = cfg['client_id']
     if client_id in session:
@@ -203,26 +200,18 @@ def handleMention():
             if data and data['code'] == code:
                 result = True
 
-    form = MentionForm(csrf_enabled=False, sourceURL=request.args.get('sourceURL'), targetURL=request.args.get('targetURL'), note='')
-    if form.mention_type.data == 'auto' or request.args.get('mention_type') == 'auto':
-        del form.note
+    form = NoteForm(note='')
 
     if request.method == 'POST':
-        app.logger.info('mention post')
+        app.logger.info('note post')
         if form.validate():
-            if form.mention_type.data == 'auto':
-                if validURL(form.sourceURL.data) == requests.codes.ok:
-                    processWebmention(form.sourceURL.data, form.targetURL.data)
-                    return 'mention posted (yes, need to make this a valid thankyou page)', 200
-                else:
-                    return 'The URL [%s] given could not be located' % form.sourceURL.data, 400
+            return 'do something with this new note', 200
         else:
             flash('all fields are required')
 
-    templateData['title'] = 'Leave a mention'
+    templateData['title'] = 'Leave a note'
     templateData['form']  = form
-    return render_template('mention.jinja', **templateData)
-
+    return render_template('note.jinja', **templateData)
 
 def validURL(targetURL):
     """Validate the target URL exists by making a HEAD request for it
@@ -320,10 +309,8 @@ def handleWebmention():
 
         app.logger.info('source: %s target: %s valid? %s' % (source, target, valid))
 
-        if valid:
+        if valid == requests.codes.ok:
             mention(source, target)
-
-        if valid:
             return 'done'
         else:
             return 'invalid post', 404
