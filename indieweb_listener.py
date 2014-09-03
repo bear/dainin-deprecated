@@ -10,13 +10,15 @@ events that IndieWeb sites require.
 
 import os, sys
 import json
+import uuid
+import urllib
 import logging
 import datetime
-import urllib
 
 import redis
 import requests
 import ronkyuu
+import ninka
 
 from urlparse import urlparse, ParseResult
 from mf2py.parser import Parser
@@ -31,9 +33,16 @@ class LoginForm(Form):
     domain       = TextField('domain', validators = [ Required() ])
     client_id    = HiddenField('client_id')
     redirect_uri = HiddenField('redirect_uri')
+    from_uri     = HiddenField('from_uri')
 
 class NoteForm(Form):
     note = TextField('note', validators = [])
+
+class TokenForm(Form):
+    app_id     = TextField('app_id', validators = [ Required() ])
+    invalidate = BooleanField('invalidate')
+    app_token  = TextField('app_token')
+    client_id  = HiddenField('client_id')
 
 class Events(object):
     def __init__(self, config):
@@ -86,7 +95,9 @@ templateData = {}
 def handleLogin():
     app.logger.info('handleLogin [%s]' % request.method)
 
-    form = LoginForm(client_id=cfg['client_id'], redirect_uri='%s/success' % cfg['baseurl'])
+    form = LoginForm(client_id=cfg['client_id'], 
+                     redirect_uri='%s/success' % cfg['baseurl'], 
+                     from_uri=request.args.get('from_uri'))
 
     if form.validate_on_submit():
         app.logger.info('login domain [%s]' % form.domain.data)
@@ -98,7 +109,7 @@ def handleLogin():
             else:
                 domain = 'http://%s' % url.netloc
 
-        authEndpoints = ronkyuu.indieauth.discoverAuthEndpoints(domain)
+        authEndpoints = ninka.indieauth.discoverAuthEndpoints(domain)
 
         if 'authorization_endpoint' in authEndpoints:
             authURL = None
@@ -120,6 +131,7 @@ def handleLogin():
                                   authURL.fragment).geturl()
 
                 if db is not None:
+                    db.hset(domain, 'from_uri',     form.from_uri.data)
                     db.hset(domain, 'redirect_uri', form.redirect_uri.data)
                     db.hset(domain, 'client_id',    form.client_id.data)
                     db.hset(domain, 'scope',        'post')
@@ -137,32 +149,46 @@ def handleLogin():
 @app.route('/success', methods=['GET',])
 def handleLoginSuccess():
     app.logger.info('handleLoginSuccess [%s]' % request.method)
-    me    = request.args.get('me')
-    code  = request.args.get('code')
-    scope = None
+    me       = request.args.get('me')
+    code     = request.args.get('code')
+    scope    = None
+    from_uri = None
     if db is not None:
         app.logger.info('getting data to validate auth code [%s]' % me)
         data = db.hgetall(me)
         if data:
-            r = ronkyuu.indieauth.validateAuthCode(code=code, 
-                                                   client_id=data['client_id'],
-                                                   redirect_uri=data['redirect_uri'])
+            r = ninka.indieauth.validateAuthCode(code=code, 
+                                                 client_id=data['client_id'],
+                                                 redirect_uri=data['redirect_uri'])
             if 'response' in r:
                 app.logger.info('login code verified')
-                scope = data['scope']
+                scope    = data['scope']
+                from_uri = data['from_uri']
+                token    = str(uuid.uuid4())
                 db.hset(me, 'code', code)
+                db.hset(me, 'token', token)
                 db.expire(me, cfg['auth_timeout'])
-                db.set(code, me)
-                db.expire(code, cfg['auth_timeout'])
-                session[data['client_id']] = code
+                db.set('code-%s' % code, me)
+                db.set('token-%s' % token, me)
+                db.expire('code-%s' % code, cfg['auth_timeout'])
+
+                session['indieauth_token'] = token
+                session['indieauth_scope'] = scope
+                session['indieauth_id']    = data['client_id']
             else:
-                app.logger.info('login code invalid')
+                app.logger.info('login invalid')
                 db.delete(me)
+                session.pop('indieauth_token', None)
+                session.pop('indieauth_scope', None)
+                session.pop('indieauth_id', None)
         else:
             app.logger.info('nothing found for domain [%s]' % me)
 
     if scope:
-        return 'authentication for %s with the scope %s was successful' % (me, scope), 200
+        if from_uri:
+            return redirect(from_uri)
+        else:
+            return redirect('/')
     else:
         return 'authentication failed', 403
 
@@ -171,47 +197,124 @@ def handleAuth():
     app.logger.info('handleAuth [%s]' % request.method)
     result = False
     if db is not None:
-        code = request.args.get('code')
-        me   = db.get(code)
-        if me:
-            data = db.hgetall(me)
-            if data and data['code'] == code:
-                result = True
+        token = request.args.get('token')
+        if token is not None:
+            me = db.get('token-%s' % token)
+            if me:
+                data = db.hgetall(me)
+                if data and data['token'] == token:
+                    result = True
     if result:
         return 'valid', 200
     else:
+        session.pop('indieauth_token', None)
+        session.pop('indieauth_scope', None)
+        session.pop('indieauth_id', None)
         return 'invalid', 403
 
 @app.route('/note', methods=['GET', 'POST'])
 def handleNote():
     app.logger.info('handleNote [%s]' % request.method)
 
-    client_id = cfg['client_id']
-    if client_id in session:
-        code = session[client_id]
+    authed = False
+    if 'indieauth_id' in session and 'indieauth_token' in session:
+        indieauth_id    = session['indieauth_id']
+        indieauth_token = session['indieauth_token']
         app.logger.info('session cookie found')
+        if db is not None:
+            me = db.get('token-' % indieauth_token)
+            if me:
+                data = db.hgetall(me)
+                if data and data['token'] == indieauth_token:
+                    authed = True
     else:
-        code = None
         app.logger.info('session cookie missing')
-    if db is not None:
-        me = db.get(code)
-        if me:
-            data = db.hgetall(me)
-            if data and data['code'] == code:
-                result = True
 
     form = NoteForm(note='')
 
     if request.method == 'POST':
         app.logger.info('note post')
         if form.validate():
-            return 'do something with this new note', 200
+            return 'do something with this new note (auth = %s)' % authed, 200
         else:
             flash('all fields are required')
 
-    templateData['title'] = 'Leave a note'
-    templateData['form']  = form
+    templateData['title']  = 'Leave a note'
+    templateData['form']   = form
+    templateData['authed'] = authed
     return render_template('note.jinja', **templateData)
+
+@app.route('/token', methods=['GET', 'POST'])
+def handleToken():
+    app.logger.info('handleToken [%s]' % request.method)
+
+    authed = False
+    me     = None
+    if 'indieauth_id' in session and 'indieauth_token' in session:
+        indieauth_id    = session['indieauth_id']
+        indieauth_token = session['indieauth_token']
+        app.logger.info('session cookie found')
+        if db is not None:
+            me = db.get('token-%s' % indieauth_token)
+            if me:
+                app.logger.info('token found in store')
+                data = db.hgetall(me)
+                if data and data['token'] == indieauth_token:
+                    authed = True
+    else:
+        app.logger.info('session cookie missing')
+
+    app.logger.info('authed = %s' % authed)
+
+    if authed:
+        app_id        = request.args.get('app_id')
+        app_token     = request.args.get('app_token')
+        caption       = 'Update'
+        token_present = True
+
+        if app_id is None:
+            app_id = ''
+        if app_token is None:
+            app_token = ''
+            caption   = 'Generate'
+            token_present = False
+
+        form = TokenForm(client_id=indieauth_id, app_id=app_id, app_token=app_token)
+
+        if request.method == 'POST':
+            app.logger.info('token post')
+            if form.validate():
+                if len(form.app_token.data) > 0:
+                    app.logger.info('app_token present')
+                    if form.invalidate.data:
+                        app.logger.info('app_token cleared')
+                        db.delete('app-%s-%s' % (me, app_id))
+                        return redirect('/token?%s' % urllib.urlencode({'app_id': app_id}))
+                    else:
+                        app_token = db.get('app-%s-%s' % (me, app_id))
+                        if form.app_token.data != app_token:
+                            app.logger.info('app_token updated')
+                            app_token = form.app_token.data
+                            db.set('app-%s-%s' % (me, app_id), app_token)
+                        return redirect('/token?%s' % urllib.urlencode({'app_id': app_id, 'app_token': app_token}))
+                else:
+                    app_id    = form.app_id.data
+                    app_token = db.get('app-%s-%s' % (me, app_id))
+                    if app_token is None:
+                        app_token = str(uuid.uuid4())
+                        db.set('app-%s-%s' % (me, app_id), app_token)
+                    return redirect('/token?%s' % urllib.urlencode({'app_id': app_id, 'app_token': app_token}))
+            else:
+                flash('all fields are required')
+
+        templateData['title']         = 'App Token'
+        templateData['form']          = form
+        templateData['authed']        = authed
+        templateData['caption']       = caption
+        templateData['token_present'] = token_present
+        return render_template('token.jinja', **templateData)
+    else:
+        return redirect('/')
 
 def validURL(targetURL):
     """Validate the target URL exists by making a HEAD request for it

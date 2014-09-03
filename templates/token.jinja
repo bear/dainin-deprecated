@@ -1,0 +1,16 @@
+{% extends "base.jinja" %}
+{% block content %}        
+<h1>Access Tokens</h1>
+{% for message in get_flashed_messages() %}
+  <div class="flash">{{ message }}</div>
+{% endfor %}
+<form action="" method="post" name="login">
+    App ID: {{form.app_id}}
+    {% if token_present %}
+    Token: {{form.app_token(size=40)}}
+    Invalidate? {{form.invalidate}}
+    {% endif %}
+    {{form.hidden_tag()}}
+    <p><button type="submit">{{caption}}</button></p>
+</form>
+{% endblock content %}

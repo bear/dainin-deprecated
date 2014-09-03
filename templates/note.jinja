@@ -5,13 +5,15 @@
   <div class="flash">{{ message }}</div>
 {% endfor %}
 <form action="" method="post" name="mention">
-    Source URL: {{form.sourceURL(size=60)}}
-    Target URL: {{form.targetURL(size=60)}}
-    {% if form.note %}
     Note: {{form.note(size=60)}}
-    {% endif %}
-    {{form.mention_type}}
     {{form.hidden_tag()}}
-    <p><button type="submit">Mention</button></p>
+    <p><button type="submit">Add Note</button></p>
 </form>
+
+{% if not authed %}
+<form action="https://bear.im/login">
+    <input name="from_uri" type="hidden" value="https://bear.im/note">
+    <input type="submit" value="Login">
+</form>
+{% endif %}
 {% endblock content %}
