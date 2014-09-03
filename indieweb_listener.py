@@ -222,7 +222,7 @@ def handleNote():
         indieauth_token = session['indieauth_token']
         app.logger.info('session cookie found')
         if db is not None:
-            me = db.get('token-' % indieauth_token)
+            me = db.get('token-%s' % indieauth_token)
             if me:
                 data = db.hgetall(me)
                 if data and data['token'] == indieauth_token:
