@@ -174,7 +174,7 @@ def handleLoginSuccess():
 
                 session['indieauth_token'] = token
                 session['indieauth_scope'] = scope
-                session['indieauth_id']    = data['client_id']
+                session['indieauth_id']    = me
             else:
                 app.logger.info('login invalid')
                 db.delete(me)
