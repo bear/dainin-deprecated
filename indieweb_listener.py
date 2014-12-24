@@ -348,21 +348,97 @@ def generateSafeName(sourceURL):
     result  = '%s_%s.mention' % (urlData.netloc, urlData.path.replace('/', '_'))
     return result
 
-def processWebmention(sourceURL, targetURL):
-    h = open(os.path.join(cfg['logpath'], 'mentions.log'), 'w+')
-    h.write('target=%s source=%s' % (targetURL, sourceURL))
-    h.close()
+def generateMentionName(targetURL, vouched):
+    urlData     = urlparse(targetURL)
+    urlPaths    = urlData.path.split('/')
+    basePath    = '/'.join(urlPaths[2:-1])
+    mentionPath = os.path.join(cfg['contentpath'], 'content', basePath)
+    mentionSlug = urlPaths[-1]
+    nMax        = 0
+
+    if vouched:
+        mentionExt = '.mention'
+    else:
+        mentionExt = '.mention_notvouched'
+
+    for f in os.listdir(mentionPath):
+        if f.endswith(mentionExt) and f.startswith(mentionSlug):
+            try:
+                n = int(f.split('.')[-2])
+            except:
+                n = 0
+            if n > nMax:
+                nMax = n
+    return os.path.join(mentionPath, '%s.%03d%s' % (mentionSlug, nMax + 1, mentionExt))
+
+def processVouch(sourceURL, targetURL, vouchDomain):
+    """Determine if a vouch domain is valid.
+
+    This implements a very simple method for determining if a vouch should
+    be considered valid:
+    1. does the vouch domain have it's own webmention endpoint
+    2. does the vouch domain have an indieauth endpoint
+    3. does the domain exist in the list of domains i've linked to
+
+    yep, super simple but enough for me to test implement vouches
+    """
+    vouchFile = os.path.join(cfg['basepath'], 'vouch_domains.txt')
+    with open(vouchFile, 'r') as h:
+        vouchDomains = []
+        for domain in h.readlines():
+            vouchDomains.append(domain.strip().lower())
+
+    # result = ronkyuu.vouch(sourceURL, targetURL, vouchDomain, vouchDomains)
+
+    if vouchDomain.lower() in vouchDomains:
+        result = True
+    else:
+        wmStatus, wmUrl = ronkyuu.discoverEndpoint(vouchDomain, test_urls=False)
+        if wmUrl is not None and wmStatus == 200:
+            authEndpoints = ninka.indieauth.discoverAuthEndpoints(vouchDomain)
+
+            if 'authorization_endpoint' in authEndpoints:
+                authURL = None
+                for url in authEndpoints['authorization_endpoint']:
+                    authURL = url
+                    break
+                if authURL is not None:
+                    result = True
+                    with open(vouchFile, 'a+') as h:
+                        h.write('\n%s' % vouchDomain)
+
+_mention = """date: %(postDate)s
+url: %(sourceURL)s
+
+[%(sourceURL)s](%(sourceURL)s)
+"""
+
+def processWebmention(sourceURL, targetURL, vouchDomain=None):
+    result = False
+    with open(os.path.join(cfg['logpath'], 'mentions.log'), 'a+') as h:
+        h.write('target=%s source=%s vouch=%s\n' % (targetURL, sourceURL, vouchDomain))
 
     r = requests.get(sourceURL, verify=False)
     if r.status_code == requests.codes.ok:
-        mentionData = { 'url':       sourceURL,
-                        'targetURL': targetURL,
-                        'recvDate':  datetime.date.today().strftime('%d %b %Y %H:%M')
+        mentionData = { 'sourceURL':   sourceURL,
+                        'targetURL':   targetURL,
+                        'vouchDomain': vouchDomain,
+                        'vouched':     False,
+                        'received':    datetime.date.today().strftime('%d %b %Y %H:%M'),
+                        'postDate':    datetime.date.today().strftime('%Y-%m-%dT%H:%M:%S')
                       }
         if 'charset' in r.headers.get('content-type', ''):
             mentionData['content'] = r.text
         else:
             mentionData['content'] = r.content
+
+        if vouchDomain is not None and cfg['require_vouch']:
+            mentionData['vouched'] = processVouch(sourceURL, targetURL, vouchDomain)
+            result                 = mentionData['vouched']
+            app.logger.info('result of vouch? %s' % result)
+        else:
+            result = not cfg['require_vouch']
+            app.logger.info('no vouch domain, result %s' % result)
 
         mf2Data = Parser(doc=mentionData['content']).to_dict()
         hcard   = extractHCard(mf2Data)
@@ -371,14 +447,22 @@ def processWebmention(sourceURL, targetURL):
         mentionData['hcardURL']  = hcard['url']
         mentionData['mf2data']   = mf2Data
 
-        safeID     = generateSafeName(sourceURL)
-        targetFile = os.path.join(cfg['basepath'], safeID)
-        sData      = json.dumps(mentionData)
+        sData  = json.dumps(mentionData)
+        safeID = generateSafeName(sourceURL)
         if db is not None:
             db.set('mention::%s' % safeID, sData)
-        open(targetFile, 'w').write(sData)
 
-def mention(sourceURL, targetURL):
+        targetFile = os.path.join(cfg['basepath'], safeID)
+        with open(targetFile, 'a+') as h:
+            h.write(sData)
+
+        mentionFile = generateMentionName(targetURL, result)
+        with open(mentionFile, 'w') as h:
+            h.write(_mention % mentionData)
+
+    return result
+
+def mention(sourceURL, targetURL, vouchDomain=None):
     """Process the Webmention of the targetURL from the sourceURL.
 
     To verify that the sourceURL has indeed referenced our targetURL
@@ -387,13 +471,16 @@ def mention(sourceURL, targetURL):
     app.logger.info('discovering Webmention endpoint for %s' % sourceURL)
 
     mentions = ronkyuu.findMentions(sourceURL)
-
+    result   = False
+    app.logger.info('mentions %s' % mentions)
     for href in mentions['refs']:
         if href != sourceURL and href == targetURL:
             app.logger.info('post at %s was referenced by %s' % (targetURL, sourceURL))
 
             # event.inboundWebmention(sourceURL, targetURL, mentions=mentions)
-            processWebmention(sourceURL, targetURL)
+            result = processWebmention(sourceURL, targetURL, vouchDomain)
+    app.logger.info('mention() returning %s' % result)
+    return result
 
 @app.route('/webmention', methods=['POST'])
 def handleWebmention():
@@ -402,19 +489,32 @@ def handleWebmention():
         valid  = False
         source = None
         target = None
+        vouch  = None
 
         if 'source' in request.form:
             source = request.form['source']
         if 'target' in request.form:
             target = request.form['target']
+        if 'vouch' in request.form:
+            vouch = request.form['vouch']
 
-        valid = validURL(target)
+        app.logger.info('source: %s target: %s vouch %s' % (source, target, vouch))
 
-        app.logger.info('source: %s target: %s valid? %s' % (source, target, valid))
+        if '/bearlog' in target:
+            valid = validURL(target)
 
-        if valid == requests.codes.ok:
-            mention(source, target)
-            return 'done'
+            app.logger.info('valid? %s' % valid)
+
+            if valid == requests.codes.ok:
+                if mention(source, target, vouch):
+                    return redirect(target)
+                else:
+                    if vouch is None and cfg['require_vouch']:
+                        return 'Vouch required for webmention', 449
+                    else:
+                        return 'Webmention is invalid', 400
+            else:
+                return 'invalid post', 404
         else:
             return 'invalid post', 404
 
@@ -455,6 +555,8 @@ def loadConfig(configFilename, host=None, port=None, basepath=None, logpath=None
         result['logpath'] = logpath
     if 'auth_timeout' not in result:
         result['auth_timeout'] = 300
+    if 'require_vouch' not in result:
+        result['require_vouch'] = False
 
     return result
 
