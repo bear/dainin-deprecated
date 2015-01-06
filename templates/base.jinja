@@ -1,17 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>{{ title }}</title>
+  <meta charset="utf-8">
+  <link rel="webmention"             href="https://bear.im/webmention"/>
+  <link rel="micropub"               href="https://bear.im/micropub">
+  <link rel="token_endpoint"         href="https://bear.im/token">
+  <link rel="authorization_endpoint" href="https://indieauth.com/auth">
 
-    {% for key, value in meta.iteritems() %}
-    <meta name="{{ key }}" content="{{ value }}"/>
-    {% endfor %}
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <meta name="mobile-web-app-capable" content="yes"/>
-
-    <link rel="webmention" href="{{ baseurl }}/webmention"/>
-    <link href="/static/main.css" rel="stylesheet" type="text/css">
+  <link href="/static/main.css" rel="stylesheet" type="text/css">
 </head>
 <body>
   <div class="content">
